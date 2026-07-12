@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+transformers>=4.30.0
+optimum[onnxruntime]>=1.12.0
+torch
