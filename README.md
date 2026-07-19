@@ -1,4 +1,4 @@
-# AnimaEmbed: Embedding Service on GTX 1050
+## [anima](https://github.com/anlma)/embed
 
 This project provides an OpenAI-compatible embedding service using `microsoft/unixcoder-base` model on a GTX 1050 (2GB VRAM) via ONNX Runtime CUDA. It is designed to work in dual-GPU setups, ensuring the target GPU (GTX 1050) is used exclusively while others (like a GTX 1060) remain idle.
 
