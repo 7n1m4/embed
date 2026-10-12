@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Wrapper script to launch the embedding service on the GTX 1050.
-# 1) Determine the CUDA device index via: 
-#      nvidia-smi --query-gpu=index,pci.bus_id,name --format=csv,noheader
-#    Pick the index where name contains "GTX 1050".
-# 2) Edit GPU_INDEX below to that number.
-# 3) Run this script as the user that owns the working directory.
+# Wrapper script to launch the embedding service.
+#
+# Inference is on the GTX 1050 via ncnn's Vulkan backend, pinned by GPU name
+# (see README.md "Why ncnn Vulkan on the GTX 1050").
+#
+# --device vulkan is the default. If the GPU is unavailable or produces bad
+# results for any reason, fall back with --device cpu (numerically identical,
+# just slower and on the CPU).
 
-GPU_INDEX=1  # <--- replace with your GTX 1050's device index
+set -euo pipefail
+cd "$(dirname "$0")"
 
-exec python embedding_service.py --gpu-index "$GPU_INDEX"
+exec python embedding_service.py --device "${DEVICE:-vulkan}"
