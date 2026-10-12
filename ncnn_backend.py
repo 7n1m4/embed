@@ -4,19 +4,19 @@ Drop-in replacement for the old ``optimum.onnxruntime`` ORT-CUDA backend.
 
 Why this exists
 ---------------
-`microsoft/unixcoder-base` used to run through ``onnxruntime-gpu`` on the
-GTX 1050, but that card is Pascal (``sm_61``) and the installed driver only
-exposes CUDA 13.0, which dropped Maxwell/Pascal/Volta support. CUDA inference
-on the 1050 is therefore impossible; the model runs through **ncnn**.
+`microsoft/unixcoder-base` used to run through ``onnxruntime-gpu``, but NVIDIA
+dropped old architectures (Maxwell/Pascal/Volta) from recent CUDA releases, so
+the driver exposes a CUDA version those cards were never built for. CUDA
+inference on them is therefore impossible; the model runs through **ncnn**.
 
-Device: Vulkan on the 1050, CPU as fallback
+Device: Vulkan on GPU, CPU as fallback
 -------------------------------------------
-The shipped default is ncnn's Vulkan backend on the GTX 1050, pinned by name.
-Both devices are numerically correct against the reference fixture:
+The shipped default is ncnn's Vulkan backend on a GPU pinned by name. Both
+devices are numerically correct against the reference fixture:
 
                           cosine vs torch
     ncnn, CPU             0.999999 .. 1.0      <- fallback
-    ncnn, Vulkan (1050)   0.999981 .. 0.999993 <- shipped default
+    ncnn, Vulkan (GPU)    0.999981 .. 0.999993 <- shipped default
 
 The Vulkan path started out at 0.157..0.311 -- it looked like a defect in the
 GPU kernel. It was two fixable problems, both of them configuration:
@@ -50,12 +50,12 @@ Two traps worth recording, both of which produced misleading numbers:
 
 Device pinning
 --------------
-Two NVIDIA GPUs are present on this machine: the GTX 1050 (this service's
-target) and a GTX 1060 driven by the user's desktop/gaming workload. Both are
-visible to Vulkan, so the backend selects its device **by name** and never
-relies on a default index -- an implicit default would land on whichever card
-Vulkan enumerates first, which here is the 1060. Device index 0 is refused
-outright: on this machine that is the 1060.
+Multiple GPUs are usually present: one pinned for this service and another
+driven by a desktop/gaming workload. Both are visible to Vulkan, so the backend
+selects its device **by name** and never relies on a default index -- an implicit
+default would land on whichever card Vulkan enumerates first, which here is the
+desktop one. The index that is refused outright is whichever one sits at index 0,
+so the pin stays correct when the enumeration order changes.
 
 A single ``ncnn.Net`` holds the model and is guarded by a lock, so the graph and
 its weights are loaded exactly once no matter how many requests arrive.
@@ -91,8 +91,9 @@ class NcnnBackendError(RuntimeError):
 def _find_pinned_device(device_name: str = PINNED_DEVICE_NAME) -> int:
     """Return the Vulkan device index of the pinned GPU, or raise.
 
-    Device index 0 is rejected on purpose: on this machine that is the GTX 1060,
-    and attaching compute work to it is not allowed.
+    Device index 0 is rejected on purpose: it is the card the desktop workload
+    is most likely to be using, and attaching compute work to that is not
+    allowed.
     """
     count = ncnn.get_gpu_count()
     if count <= 0:
@@ -109,7 +110,8 @@ def _find_pinned_device(device_name: str = PINNED_DEVICE_NAME) -> int:
             if i == 0:
                 raise NcnnBackendError(
                     f"device 0 ('{name}') matches the pinned name but is device index 0, "
-                    "which on this machine is the GTX 1060; refusing to use it"
+                    "which is refused outright as the card the desktop is most "
+                    "likely to be using"
                 )
             return i
 

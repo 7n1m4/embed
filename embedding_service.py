@@ -1,13 +1,14 @@
 """OpenAI-compatible (/v1/embeddings) service for microsoft/unixcoder-base.
 
 Inference runs through **ncnn** (see ncnn_backend.py). CUDA used to be the
-backend, but the 1050 is Pascal (sm_61) and the installed driver only exposes
-CUDA 13.0, which dropped Maxwell/Pascal/Volta support, so that path is closed
-for good.
+backend, but NVIDIA dropped old architectures (Maxwell/Pascal/Volta) from recent
+CUDA releases, so that path is closed for good on the class of card this targets.
+Vulkan through ncnn is the replacement, and it keeps working on old NVIDIA and
+Radeon hardware alike.
 
-**Device: the GTX 1050 via ncnn's Vulkan backend.** Both GPUs expose Vulkan
-1.4, so the device is pinned by *name* and index 0 is refused outright -- the
-GTX 1060 used for desktop and gaming is never attached. Two config values are
+**Device: a Vulkan GPU, pinned by name.** Both the Vulkan device and index 0 are
+handled in ncnn_backend, which pins by *name* and refuses index 0 outright -- the
+card used for desktop/gaming is never attached. Two config values are
 load-bearing and must be set before ``load_param()``:
 
 1. fp16 off, all three flags. The Vulkan ``MultiHeadAttention`` path rounds
@@ -46,9 +47,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PARAM_PATH = os.path.join(HERE, "unixcoder-onnx", "unixcoder.pnnx.fp32.ncnn.param")
 BIN_PATH = os.path.join(HERE, "unixcoder-onnx", "unixcoder.pnnx.fp32.ncnn.bin")
 
-# The GTX 1050 through ncnn Vulkan. Both fixes this depends on live in
-# ncnn_backend.py: fp16 disabled before load_param(), and per-sample
-# unpadded lengths. Changing either reintroduces cosine-0.16 output.
+# Vulkan on a pinned GPU. Both fixes this depends on live in ncnn_backend.py:
+# fp16 disabled before load_param(), and per-sample unpadded lengths. Changing
+# either reintroduces cosine-0.16 output.
 DEFAULT_DEVICE = "vulkan"
 
 # Mutable so `--device` can be applied before the backend is first built.

@@ -2,24 +2,38 @@
 
 OpenAI-compatible embedding service for `microsoft/unixcoder-base`.
 
-Inference runs on the **GTX 1050 via ncnn's Vulkan backend**. The GTX 1060 used
-for desktop/gaming is left completely untouched, so the service can run while you
-game.
+It exists to feed a coding agent's memory store, so the HTTP contract is fixed:
+the client needs no changes and can point at `0.0.0.0:8000` from another machine.
 
-## Why ncnn Vulkan on the GTX 1050
+Inference runs on any Vulkan-capable GPU through **ncnn's Vulkan backend** —
+which is what makes this usable on old NVIDIA and Radeon cards that CUDA no
+longer supports. Because the card is picked by name rather than by index, you can
+pin the service to a spare/idle card and leave the one driving your desktop
+alone, so it can run while you game.
 
-The GTX 1050 is Pascal (`sm_61`). The installed driver only exposes CUDA 13.0,
-which dropped Maxwell/Pascal/Volta — so **CUDA inference on the 1050 is
-impossible**, permanently. ncnn's Vulkan backend was the replacement.
+**Scope in v1: one model, read-only.** `unixcoder-base` is the only model served
+— the request's `model` field is echoed back but selects nothing, and there is no
+registry or `/v1/models`. Embeddings are computed on request and never stored, so
+the service holds no index and no persistence. Anything beyond that is a scope
+expansion, not a fix.
 
-Vulkan did reach the GPU, but the first measurement came out at cosine **0.157**
-against torch. That turned out to be *two* separate, fixable problems rather than
-a defect in the GPU path:
+## Why ncnn Vulkan
+
+The obvious choice on an old NVIDIA card is CUDA, and it is closed: NVIDIA
+dropped Maxwell/Pascal/Volta from recent CUDA releases, so the driver exposes a
+CUDA version the card was never built for. That rules out
+`onnxruntime-gpu` permanently, not just "needs a rebuild" — there is no CUDA path
+forward on such hardware.
+
+ncnn's Vulkan backend is the replacement, and Vulkan is still supported on those
+cards and on old Radeon hardware too. It did reach the GPU, but the first
+measurement came out at cosine **0.157** against torch. That turned out to be
+*two* separate, fixable problems rather than a defect in the GPU path:
 
 | Backend | Cosine vs torch | Verdict |
 |---|---|---|
-| CUDA (onnxruntime-gpu) | — | impossible, Pascal dropped from CUDA 13 |
-| ncnn, Vulkan on GTX 1050 | **0.999981** | correct, shipped |
+| CUDA (onnxruntime-gpu) | — | impossible, old architectures dropped from CUDA |
+| ncnn, Vulkan on GPU | **0.999981** | correct, shipped |
 | ncnn, CPU | **0.999999** | correct, fallback |
 
 Both GPU numbers were measured through the service's own HTTP endpoint against
@@ -84,9 +98,12 @@ The three layers that never reach Vulkan are the `Embed` layers — `Embed` has 
 Vulkan implementation anywhere in ncnn. `describe()` now reports
 `vulkan_layers` so this can be checked instead of trusted.
 
-**2. Pinning by name, never by index.** Both GPUs expose Vulkan, so the device is
-resolved by the `GTX 1050` name and index 0 is refused outright. The GTX 1060
-stays free for the desktop with no opt-in per request.
+**2. Pinning by name, never by index.** Multiple GPUs are usually visible to
+Vulkan, so the device is resolved by name and index 0 is refused outright. That
+keeps the card driving your desktop free regardless of what else is plugged in,
+and there is no per-request opt-in that can move the model onto it. To serve a
+different card, change the pinned name (a constant in the backend, not a flag)
+and restart.
 
 ## Prerequisites
 
@@ -130,10 +147,32 @@ curl -X POST http://localhost:8000/v1/embeddings \
 
 `python mock_client.py` drives both shapes and exits 0.
 
+It is a normal OpenAI-shaped client — anything that speaks the embeddings API
+works unchanged. In Python, using only the standard library:
+
+```python
+import json, urllib.request
+
+def embed(texts):
+    req = urllib.request.Request(
+        "http://localhost:8000/v1/embeddings",
+        data=json.dumps({"input": texts, "model": "unixcoder-base"}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return [row["embedding"] for row in json.load(resp)["data"]]
+
+vecs = embed(["def f(): pass", "class A: pass"])
+print(len(vecs), [len(v) for v in vecs])   # 2 [768, 768]
+```
+
+No auth is enforced, so the endpoint is open to whatever can reach it — put a
+reverse proxy in front of it before exposing it past a trusted network.
+
 ### Running it
 
 ```bash
-bash run-embed-service.sh          # GTX 1050 via ncnn Vulkan (default)
+bash run-embed-service.sh          # Vulkan GPU (default)
 DEVICE=cpu bash run-embed-service.sh   # CPU fallback, same embeddings
 ```
 
@@ -145,11 +184,11 @@ inside the backend, so a second process buys nothing.
 
 ### GPU behaviour
 
-- The GTX 1050 is pinned by **name**. Index 0 is rejected outright, so there is
-  no request shape that can put the model on the GTX 1060.
+- The GPU is pinned by **name**. Index 0 is rejected outright, so no request
+  shape can move the model onto it, whichever card it is.
 - Under sustained load the service holds **~374 MiB at 90%+ utilization** on the
-  1050. The 1060 stays at its idle baseline with only the desktop's own
-  processes (`vibepanel`, `hyprshell`, `chromium`) attached.
+  pinned card. Any card driving the desktop stays at its idle baseline with only
+  that desktop's own processes attached.
 - `--device cpu` attaches to no GPU at all — useful when the card is busy, or to
   cross-check the GPU's numbers.
 
