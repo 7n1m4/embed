@@ -34,12 +34,16 @@ afterwards makes the run return null. Measured on the same four texts:
     fp16 on  (ncnn defaults)   cosine 0.24 .. 0.31
     fp16 off                   cosine 0.999981 .. 0.999993
 
-**2. Never pad the graph input.** The tokenizer's ``padding=True`` pads every
-row to the longest in the batch. The CPU path tolerates it; the GPU path does
-not. Sample 0 is 9 tokens and scores 0.999990 unpadded but 0.781221 when padded
-to 16, while a 16-token sample is identical either way. ``last_hidden_state()``
-so runs each sample at its own length and re-pads the *outputs* for
-``mean_pooling``, which only multiplies rows the attention mask marks as pad.
+**2. Never pad the graph input, on either device.** The tokenizer's
+``padding=True`` pads every row to the longest in the batch, and that
+corrupts both backends -- measured cosine 0.78 on Vulkan and 0.058 on
+CPU against the torch reference, so the GPU is not the sensitive path
+here and a "works on CPU" check will not catch it. Sample 0 is 9 tokens
+and scores 0.999990 unpadded but 0.781221 when padded to 16, while a
+16-token sample is identical either way.
+``last_hidden_state()`` so runs each sample at its own length and re-pads the
+*outputs* for ``mean_pooling``, which only multiplies rows the attention mask
+marks as pad.
 
 Two traps worth recording, both of which produced misleading numbers:
   * ``support_vulkan`` only becomes meaningful if the device is set **before**
