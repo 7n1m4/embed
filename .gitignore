@@ -5,3 +5,9 @@ __pycache__/
 *.pyo
 *.pyd
 .DS_Store
+
+# test-run artefacts
+tests/_service.log
+tests/_faulttmp/
+# vulkaninfo probe output (the probe writes VP_VULKANINFO_*.json into the CWD)
+VP_VULKANINFO_*.json
