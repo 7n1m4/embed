@@ -182,13 +182,52 @@ Keep `workers=1` (the default, and the only value accepted). Every worker loads
 its own copy of the model. ncnn's own inference is also serialized behind a lock
 inside the backend, so a second process buys nothing.
 
+The service runs a **startup preflight** before it binds the port (tokenizer,
+model files, pinned GPU, model load) and exits `SystemExit(2)` with a printed
+reason if any of them is broken. The tokenizer is **vendored locally** under
+`tokenizer/` and loaded offline first, with the Hub only as a fallback, so a
+network outage cannot break startup. Tests exist: `python tests/run_tests.py`
+runs 68 CPU-side black-box tests in ~85 s on port 8001 without touching the GPU.
+
 ### GPU behaviour
 
 - The GPU is pinned by **name**. Index 0 is rejected outright, so no request
   shape can move the model onto it, whichever card it is.
-- Under sustained load the service holds **~374 MiB at 90%+ utilization** on the
-  pinned card. Any card driving the desktop stays at its idle baseline with only
-  that desktop's own processes attached.
 - `--device cpu` attaches to no GPU at all — useful when the card is busy, or to
   cross-check the GPU's numbers.
+
+### GPU memory
+
+The fp32 weights are **501,356,844 bytes = 478.13 MiB** (125,339,211 params), so
+no configuration of this model can hold less than that on the card. fp16 storage
+is deliberately off — it rounds Q/K before accumulation and drops cosine from
+0.999981 to ~0.16 — so fp32 is the intended cost, not waste.
+
+- Short traffic settles at **~370–400 MiB** and stays there (measured 370, then
+  376, then 402 MiB at steady state, after the restart that cleared the ratchet
+  below); short traffic does not grow the footprint.
+- One single long request is permanent *for the life of the process*: a
+  **2163-token** request took the service 900 MiB → **1661 MiB**, and it did not
+  come back down — still 1661 MiB after 30 s idle and after further short
+  requests.
+- Further long requests ratcheted it to **1953-1962 MiB**, leaving only ~8-24 MiB
+  free on the 2048 MiB pinned card.
+- The ratchet is ncnn's `VkBlobAllocator`: it does not return blocks to the
+  driver, so the largest blob shape ever served becomes the floor. **A restart
+  is the only thing that lowers it** — the ~370 MiB above is exactly that: the
+  daemon was restarted (2026-10-13, pid 636855) and the ratchet went back to
+  near the 478 MiB weight floor. It is permanent per process, not permanent
+  forever.
+- The position embedding has **1026** rows, so the useful token range stops there;
+  beyond it the extra tokens have no learned position.
+
+| Traffic | Measured on the pinned GTX 1050 (2048 MiB) |
+|---|---|
+| at rest, right after a restart | ~370–400 MiB |
+| after one 2163-token request | 1661 MiB (never came back down) |
+| after further long requests | 1953-1962 MiB |
+
+Any card driving the desktop stays at its idle baseline with only that desktop's
+own processes attached — the service is pinned by name, so no request shape can
+move the model onto it.
 

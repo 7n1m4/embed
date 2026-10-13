@@ -15,7 +15,17 @@ load-bearing and are detailed in `ncnn_backend.py` and `README.md`: fp16 must be
 disabled **before** `load_param()`, and every sample must be fed at its own real
 length, never padded to the batch max. Without both, the GPU runs at 90%+ and
 produces embeddings at cosine ~0.16. With both, cosine is 0.999981+ and the
-pinned card holds ~374 MiB.
+pinned card holds **~370–400 MiB at rest** following a restart (measured 370, 376,
+then 402 MiB at steady state) — the fp32 weight floor is 501,356,844 bytes =
+478.13 MiB, and fp16 is off because it would break the embeddings. Memory is a
+ratchet: one very long request raised it 900 → **1661 MiB** and it never came
+back, and further long requests took it to **~1962 MiB** of 2048 MiB, because
+ncnn's `VkBlobAllocator` does not return blocks to the driver. **That ratchet is
+permanent for the life of the process, and only a restart clears it — which is
+why the figures above are ~370 MiB now.** The footprint is bounded by the longest
+request ever served, so `MAX_INPUT_TOKENS` (1024) is the cap that bounds it;
+reason about the card's headroom accordingly, and remember a restart is the only
+thing that releases it.
 
 **Scope in v1: one model, read-only.** `microsoft/unixcoder-base` is the only
 model served; the request's `model` field is echoed back but is not used to
