@@ -503,29 +503,36 @@ def _unload_on_idle() -> None:
     thread; it never raises, because a failure here must not take down the
     process that is still serving the endpoint."""
     try:
-        release_backend()
+        unloaded = release_backend()
     except Exception:  # noqa: BLE001 - a timer thread must not propagate
-        pass
+        return
+    if unloaded:
+        # Logged by the caller, not by release_backend(): "why" the model went
+        # away differs per call site, and a log line that claims an idle timer
+        # fired when it was preflight is worse than no line at all.
+        _preflight_log(
+            f"model unloaded after {_keep_alive['seconds']}s idle; "
+            "next request reloads it"
+        )
 
 
-def release_backend() -> None:
-    """Unload the model if it is loaded. The next request reloads it.
+def release_backend() -> bool:
+    """Unload the model if it is loaded; return True if it actually went away.
 
-    Called by the idle timer and at shutdown. The timer that fired to get
-    here is already dead, so the handle is simply cleared rather than
-    cancelled.
+    Shared by the idle timer, preflight, and shutdown. The timer that fired to
+    get here is already dead, so the handle is simply cleared rather than
+    cancelled. Deliberately silent about *why*: the caller knows that, and
+    logging it here would attribute every release to the idle timer.
     """
     global _backend, _unload_timer
     with _backend_lock:
         _unload_timer = None
         if _backend is None:
-            return
+            return False
         backend = _backend
         _backend = None
         backend.close()
-    # Logged outside the lock: an operator needs to see the card handed back,
-    # and this line is the only evidence the saving actually happened.
-    _preflight_log(f"model unloaded after {_keep_alive['seconds']}s idle; next request reloads it")
+    return True
 
 
 def ensure_backend() -> NcnnEmbeddingBackend:
@@ -571,12 +578,8 @@ def get_tokenizer() -> AutoTokenizer:
 
 @app.on_event("shutdown")
 def _shutdown_backend() -> None:
-    global _backend
-    with _backend_lock:
-        _cancel_unload_timer()
-        if _backend is not None:
-            _backend.close()
-            _backend = None
+    if release_backend():
+        _preflight_log("model unloaded on shutdown")
 
 
 # ---- OpenAI-shaped models -------------------------------------------------
