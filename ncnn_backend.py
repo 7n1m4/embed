@@ -325,8 +325,22 @@ class NcnnEmbeddingBackend:
     # ---- lifecycle --------------------------------------------------------
 
     def close(self) -> None:
-        """Release the ncnn net. The backend must not be used afterwards."""
+        """Release the ncnn net. The backend must not be used afterwards.
+
+        Idempotent: a second ``close()`` returns immediately. That matters
+        because the service unloads the model after an idle timeout and at
+        shutdown, and ``ncnn.destroy_gpu_instance()`` tears down the
+        *process-global* Vulkan instance -- calling it twice is undefined
+        (measured: a second global teardown while another ``Net`` was still
+        loaded killed the process with SIGSEGV). Guarding on ``net`` being
+        already ``None`` is what makes the second call a no-op.
+
+        ``self._lock`` is held, so ``close()`` can never interleave an
+        inference: a request either finishes its forward pass or never starts.
+        """
         with self._lock:
+            if self.net is None:
+                return
             self.net = None
             if self.use_vulkan:
                 try:

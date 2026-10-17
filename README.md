@@ -184,10 +184,42 @@ inside the backend, so a second process buys nothing.
 
 The service runs a **startup preflight** before it binds the port (tokenizer,
 model files, pinned GPU, model load) and exits `SystemExit(2)` with a printed
-reason if any of them is broken. The tokenizer is **vendored locally** under
+reason if any of them are broken. The tokenizer is **vendored locally** under
 `tokenizer/` and loaded offline first, with the Hub only as a fallback, so a
 network outage cannot break startup. Tests exist: `python tests/run_tests.py`
 runs 68 CPU-side black-box tests in ~85 s on port 8001 without touching the GPU.
+
+### Model lifecycle — loaded on demand, unloaded when idle
+
+The model is **not** resident at rest. It is loaded on the first request after
+an idle period and released again when the service goes quiet, so an idle
+service holds no VRAM at all. Measured on the pinned GTX 1050 with
+`nvidia-smi`, not inferred:
+
+| State | GPU used | Note |
+|---|---|---|
+| model unloaded | **357 MiB** | driver confirms the release |
+| model resident | 727 MiB | +370 MiB over the released floor |
+
+The first request after an idle period pays the reload — about one second on
+Vulkan — and the answer is **bit-identical** to a run that never unloaded
+(cosine 1.000000 across a load/unload/reload cycle on the reference texts). A
+memory-store client embeds in bursts, so this trades roughly a second of
+latency after each idle gap for a permanently free card.
+
+```bash
+python embedding_service.py --device vulkan --keep-alive 300   # 5 min (default)
+python embedding_service.py --keep-alive 0    # unload after every request
+python embedding_service.py --keep-alive -1   # never unload (old behaviour)
+```
+
+`run-embed-service.sh` passes `--keep-alive` through if you want it persistent.
+
+Two invariants the release leans on: the model is only ever **one** Net (uvicorn
+workers are pinned to 1, so there is never a second Net for a global Vulkan
+teardown to break), and the unload runs under the same lock as inference, so it
+can never interrupt a forward pass — a request either completes or triggers a
+clean reload.
 
 ### GPU behaviour
 

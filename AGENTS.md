@@ -21,11 +21,13 @@ then 402 MiB at steady state) — the fp32 weight floor is 501,356,844 bytes =
 ratchet: one very long request raised it 900 → **1661 MiB** and it never came
 back, and further long requests took it to **~1962 MiB** of 2048 MiB, because
 ncnn's `VkBlobAllocator` does not return blocks to the driver. **That ratchet is
-permanent for the life of the process, and only a restart clears it — which is
-why the figures above are ~370 MiB now.** The footprint is bounded by the longest
-request ever served, so `MAX_INPUT_TOKENS` (1024) is the cap that bounds it;
-reason about the card's headroom accordingly, and remember a restart is the only
-thing that releases it.
+permanent for the life of the process, and a restart clears it — which is why
+the figures above are ~370 MiB now.** An idle unload also releases the card
+(measured back to 357 MiB), but only by tearing the whole Vulkan instance down;
+it does not reclaim the ratchet's high-water mark *within* a running process, so
+a card pushed to 1962 MiB needs a restart either way. The footprint is bounded
+by the longest request ever served, so `MAX_INPUT_TOKENS` (1024) is the cap that
+bounds it; reason about the card's headroom accordingly.
 
 **Scope in v1: one model, read-only.** `microsoft/unixcoder-base` is the only
 model served; the request's `model` field is echoed back but is not used to
@@ -48,6 +50,21 @@ Runtime — `export_model.py` only uses it to produce the ONNX input to pnnx).
 is rejected explicitly, so there is no request shape that can move the model onto
 the card driving the desktop. Targeting a different card means changing the
 pinned-name constant in the backend — there is no CLI flag for it.
+
+**Model lifecycle:** the model is **not** resident while the service is idle. It
+loads on the first request after an idle gap and is unloaded again when the
+service goes quiet, Ollama-style: an idle service holds no VRAM at all (357 MiB
+vs 727 MiB resident, measured on the pinned card via `nvidia-smi`). The first
+request after a gap pays the reload (~1 s on Vulkan) and gets a bit-identical
+result (cosine 1.000000 across a load/unload/reload cycle).
+`--keep-alive <seconds>` sets the idle timeout (default 300); `-1` keeps the
+model resident for the life of the process, `0` unloads after every request.
+Preflight still loads the model to verify the Vulkan binding, then releases it
+before serving — the eager load is verification, not residency. The unload runs
+under the same lock as inference (it cannot interrupt a forward pass) and the
+process only ever holds one `ncnn.Net`, because `--workers 1` is enforced and
+`ncnn.destroy_gpu_instance()` is process-global: tearing it down while a second
+Net is loaded segfaults the process.
 
 **Backend history (do not reopen the fp16 and padding questions):** the first
 correct-load-order Vulkan measurement was cosine 0.157 vs torch. That is two
